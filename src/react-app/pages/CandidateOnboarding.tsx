@@ -26,11 +26,13 @@ interface CandidateData {
   // Step 4 - Video
   videoAnswers: Array<{ question: string; duration: number; status: string }>;
   
-  // Step 5 - Review
+  // Step 5 - Review & Registration
   consentGiven: boolean;
+  password: string;
+  confirmPassword: string;
 }
 
-const STEPS = ['Basics', 'Ideal Role', 'Skills & Tools', 'Video Q&A', 'Review & Consent'];
+const STEPS = ['Basics', 'Ideal Role', 'Skills & Tools', 'Video Q&A', 'Complete & Register'];
 
 const PLAN_LIMITS = {
   Basic: { reRecords: 1 },
@@ -38,11 +40,16 @@ const PLAN_LIMITS = {
   Pro: { reRecords: -1 } // unlimited
 };
 
+// API Configuration
+const API_BASE_URL = 'http://localhost:3001/api/v1';
+
 export default function CandidateOnboarding() {
   const [currentStep, setCurrentStep] = useState(1);
   const [planType] = useState<keyof typeof PLAN_LIMITS>('Basic');
   const [profileId, setProfileId] = useState<number | null>(null);
   const [interviewQuestions, setInterviewQuestions] = useState<string[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [candidateData, setCandidateData] = useState<CandidateData>({
     name: '',
     email: '',
@@ -58,30 +65,93 @@ export default function CandidateOnboarding() {
     skills: [],
     achievements: '',
     videoAnswers: [],
-    consentGiven: false
+    consentGiven: false,
+    password: '',
+    confirmPassword: ''
   });
 
-  const handleNext = async () => {
-    if (currentStep === 2 && candidateData.targetJobTitles.length > 0) {
-      // Fetch interview questions based on selected job titles
-      try {
-        const response = await fetch(`/api/questions/${candidateData.targetJobTitles.join(',')}`);
-        const data = await response.json();
-        setInterviewQuestions(data.questions || []);
-      } catch (error) {
-        console.error('Error fetching questions:', error);
-        // Fallback questions
-        setInterviewQuestions([
-          "Tell us about yourself and your professional background.",
-          "What motivates you in your career and what are you looking for in your next role?",
-          "Describe a challenging situation you faced at work and how you handled it.",
-          "Where do you see yourself in 5 years?"
-        ]);
-      }
+  // API helper function (no authentication needed for onboarding)
+  const apiCall = async (endpoint: string, options: RequestInit = {}) => {
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ message: 'An error occurred' }));
+      throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
     }
-    
-    if (currentStep < STEPS.length) {
-      setCurrentStep(currentStep + 1);
+
+    return response.json();
+  };
+
+  const handleNext = async () => {
+    setError(null);
+    setLoading(true);
+
+    try {
+      if (currentStep === 1) {
+        // Create initial profile after step 1 (no authentication required)
+        await createInitialProfile();
+      } else if (currentStep === 2 && candidateData.targetJobTitles.length > 0) {
+        // Fetch interview questions based on selected job titles
+        await fetchInterviewQuestions();
+      }
+      
+      if (currentStep < STEPS.length) {
+        setCurrentStep(currentStep + 1);
+      }
+    } catch (err) {
+      console.error('Error in handleNext:', err);
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createInitialProfile = async () => {
+    try {
+      const profileData = {
+        full_name: candidateData.name,
+        location: candidateData.location,
+        has_work_authorization: candidateData.workAuthorisation,
+        languages: candidateData.languages,
+        years_experience: candidateData.yearsExperience,
+      };
+
+      const response = await apiCall('/candidates/profile', {
+        method: 'POST',
+        body: JSON.stringify(profileData),
+      });
+
+      if (response.success) {
+        setProfileId(response.data.id);
+        console.log('Profile created with ID:', response.data.id);
+      }
+    } catch (error) {
+      console.error('Error creating profile:', error);
+      throw error;
+    }
+  };
+
+  const fetchInterviewQuestions = async () => {
+    try {
+      const response = await apiCall(`/questions/${candidateData.targetJobTitles.join(',')}`);
+      if (response.success) {
+        setInterviewQuestions(response.data.questions);
+      }
+    } catch (error) {
+      console.error('Error fetching questions:', error);
+      // Use fallback questions on error
+      setInterviewQuestions([
+        "Tell us about yourself and your professional background.",
+        "What motivates you in your career and what are you looking for in your next role?",
+        "Describe a challenging situation you faced at work and how you handled it.",
+        "Where do you see yourself in 5 years?"
+      ]);
     }
   };
 
@@ -91,52 +161,161 @@ export default function CandidateOnboarding() {
     }
   };
 
-  const updateData = (field: keyof CandidateData, value: any) => {
+  const updateData = async (field: keyof CandidateData, value: any) => {
     setCandidateData(prev => ({ ...prev, [field]: value }));
+    
+    // Auto-save profile updates if profile exists and we're past step 1
+    if (profileId && currentStep > 1 && field !== 'password' && field !== 'confirmPassword') {
+      try {
+        await updateProfile({ [field]: value });
+      } catch (error) {
+        console.error('Error auto-saving profile:', error);
+        // Don't throw error for auto-save, just log it
+      }
+    }
+  };
+
+  const updateProfile = async (updates: any) => {
+    if (!profileId) return;
+
+    // Transform frontend field names to backend field names
+    const backendUpdates: any = {};
+    
+    if (updates.name) backendUpdates.full_name = updates.name;
+    if (updates.location) backendUpdates.location = updates.location;
+    if (updates.workAuthorisation !== undefined) backendUpdates.has_work_authorization = updates.workAuthorisation;
+    if (updates.languages) backendUpdates.languages = updates.languages;
+    if (updates.yearsExperience !== undefined) backendUpdates.years_experience = updates.yearsExperience;
+    if (updates.targetJobTitles) backendUpdates.target_job_titles = updates.targetJobTitles;
+    if (updates.preferredIndustries) backendUpdates.preferred_industries = updates.preferredIndustries;
+    if (updates.workingModel) backendUpdates.working_model = updates.workingModel;
+    if (updates.salaryRange) {
+      backendUpdates.salary_min = updates.salaryRange.min;
+      backendUpdates.salary_max = updates.salaryRange.max;
+      backendUpdates.salary_currency = updates.salaryRange.currency;
+    }
+    if (updates.willingToRelocate !== undefined) backendUpdates.is_willing_to_relocate = updates.willingToRelocate;
+    if (updates.skills) backendUpdates.skills = updates.skills;
+    if (updates.achievements) backendUpdates.achievements = updates.achievements;
+    if (updates.consentGiven !== undefined) backendUpdates.has_consented_ai_analysis = updates.consentGiven;
+
+    await apiCall(`/candidates/profile/${profileId}`, {
+      method: 'PUT',
+      body: JSON.stringify(backendUpdates),
+    });
   };
 
   const handleCompleteProfile = async () => {
+    setLoading(true);
+    setError(null);
+
     try {
-      // Create candidate profile
-      const response = await fetch('/api/candidates/profile', {
+      if (!profileId) {
+        throw new Error('Profile ID not found. Please try again.');
+      }
+
+      // Validate passwords match
+      if (candidateData.password !== candidateData.confirmPassword) {
+        throw new Error('Passwords do not match');
+      }
+
+      if (candidateData.password.length < 8) {
+        throw new Error('Password must be at least 8 characters long');
+      }
+
+      // Final profile update with all data
+      const finalProfileData = {
+        full_name: candidateData.name,
+        location: candidateData.location,
+        has_work_authorization: candidateData.workAuthorisation,
+        languages: candidateData.languages,
+        years_experience: candidateData.yearsExperience,
+        target_job_titles: candidateData.targetJobTitles,
+        preferred_industries: candidateData.preferredIndustries,
+        working_model: candidateData.workingModel,
+        salary_min: candidateData.salaryRange.min,
+        salary_max: candidateData.salaryRange.max,
+        salary_currency: candidateData.salaryRange.currency,
+        is_willing_to_relocate: candidateData.willingToRelocate,
+        skills: candidateData.skills,
+        achievements: candidateData.achievements,
+        has_consented_ai_analysis: candidateData.consentGiven,
+        is_profile_complete: true
+      };
+
+      // Update profile
+      await apiCall(`/candidates/profile/${profileId}`, {
+        method: 'PUT',
+        body: JSON.stringify(finalProfileData),
+      });
+
+      // Mark profile as complete
+      await apiCall(`/candidates/profile/${profileId}/complete`, {
+        method: 'PUT'
+      });
+
+      // Claim the profile and create user account
+      const claimResponse = await apiCall(`/candidates/profile/${profileId}/claim`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          userId: 1, // In real app, get from auth context
-          fullName: candidateData.name,
-          location: candidateData.location,
-          hasWorkAuthorization: candidateData.workAuthorisation,
-          languages: candidateData.languages,
-          yearsExperience: candidateData.yearsExperience,
-          targetJobTitles: candidateData.targetJobTitles,
-          preferredIndustries: candidateData.preferredIndustries,
-          workingModel: candidateData.workingModel,
-          salaryMin: candidateData.salaryRange.min,
-          salaryMax: candidateData.salaryRange.max,
-          salaryCurrency: candidateData.salaryRange.currency,
-          isWillingToRelocate: candidateData.willingToRelocate,
-          skills: candidateData.skills,
-          achievements: candidateData.achievements,
-          hasConsentedAiAnalysis: candidateData.consentGiven
+          email: candidateData.email,
+          password: candidateData.password,
+          full_name: candidateData.name
         })
       });
 
-      if (response.ok) {
-        const result = await response.json();
-        setProfileId(result.id);
-        
-        // Mark profile as complete
-        await fetch(`/api/candidates/profile/${result.id}/complete`, {
-          method: 'PUT'
-        });
+      if (claimResponse.success) {
+        // Store auth tokens
+        localStorage.setItem('authToken', claimResponse.data.tokens.accessToken);
+        localStorage.setItem('refreshToken', claimResponse.data.tokens.refreshToken);
         
         alert('Profile completed successfully! You can now start receiving job matches.');
-      } else {
-        throw new Error('Failed to create profile');
+        
+        // Redirect to dashboard
+        window.location.href = '/dashboard';
       }
+      
     } catch (error) {
       console.error('Error completing profile:', error);
-      alert('There was an error completing your profile. Please try again.');
+      setError(error instanceof Error ? error.message : 'There was an error completing your profile. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVideoUpload = async (questionIndex: number, videoBlob: Blob, duration: number) => {
+    if (!profileId) {
+      console.error('No profile ID available for video upload');
+      return;
+    }
+
+    try {
+      // Convert blob to base64 for API
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64 = reader.result as string;
+        
+        // Upload video (this endpoint will need authentication later, but for now we'll simulate)
+        console.log('Video upload would be sent to:', {
+          candidateProfileId: profileId,
+          questionText: interviewQuestions[questionIndex],
+          videoBlob: base64.split(',')[1],
+          durationSeconds: duration,
+          responseOrder: questionIndex + 1
+        });
+
+        // Update local state
+        const newAnswers = [...candidateData.videoAnswers];
+        newAnswers[questionIndex] = {
+          question: interviewQuestions[questionIndex],
+          duration: duration,
+          status: 'ready'
+        };
+        setCandidateData(prev => ({ ...prev, videoAnswers: newAnswers }));
+      };
+      reader.readAsDataURL(videoBlob);
+    } catch (error) {
+      console.error('Error uploading video:', error);
     }
   };
 
@@ -149,9 +328,16 @@ export default function CandidateOnboarding() {
       case 3:
         return <SkillsStep data={candidateData} updateData={updateData} />;
       case 4:
-        return <VideoStep data={candidateData} updateData={updateData} planType={planType} questions={interviewQuestions} profileId={profileId} />;
+        return <VideoStep 
+          data={candidateData} 
+          updateData={updateData} 
+          planType={planType} 
+          questions={interviewQuestions} 
+          profileId={profileId}
+          onVideoUpload={handleVideoUpload}
+        />;
       case 5:
-        return <ReviewStep data={candidateData} updateData={updateData} />;
+        return <CompleteStep data={candidateData} updateData={updateData} />;
       default:
         return null;
     }
@@ -169,6 +355,12 @@ export default function CandidateOnboarding() {
           </div>
 
           <Stepper steps={STEPS} currentStep={currentStep} />
+
+          {error && (
+            <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-red-700 text-sm">{error}</p>
+            </div>
+          )}
 
           <div className="mt-8">
             {renderStepContent()}
@@ -190,16 +382,18 @@ export default function CandidateOnboarding() {
 
             <button
               onClick={currentStep === STEPS.length ? handleCompleteProfile : handleNext}
-              disabled={currentStep === STEPS.length && !candidateData.consentGiven}
+              disabled={loading || (currentStep === STEPS.length && (!candidateData.consentGiven || !candidateData.email || !candidateData.password))}
               className={`flex items-center gap-2 px-6 py-2 rounded-lg text-sm font-medium ${
-                currentStep === STEPS.length
-                  ? candidateData.consentGiven 
+                loading 
+                  ? 'bg-grey-300 text-grey-500 cursor-not-allowed'
+                  : currentStep === STEPS.length
+                  ? (candidateData.consentGiven && candidateData.email && candidateData.password)
                     ? 'bg-green-500 hover:bg-green-600 text-white'
                     : 'bg-grey-300 text-grey-500 cursor-not-allowed'
                   : 'bg-primary-500 hover:bg-primary-600 text-white'
               }`}
             >
-              {currentStep === STEPS.length ? 'Complete Profile' : 'Next'}
+              {loading ? 'Loading...' : currentStep === STEPS.length ? 'Create Account & Complete' : 'Next'}
               <ArrowRight className="w-4 h-4" />
             </button>
           </div>
@@ -219,25 +413,28 @@ function BasicsStep({ data, updateData }: { data: CandidateData; updateData: Fun
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
-          <label className="block text-sm font-medium text-grey-700 mb-2">Full Name</label>
+          <label className="block text-sm font-medium text-grey-700 mb-2">Full Name *</label>
           <input
             type="text"
             value={data.name}
             onChange={(e) => updateData('name', e.target.value)}
             className="w-full px-3 py-2 border border-grey-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             placeholder="Your full name"
+            required
           />
         </div>
         
         <div>
-          <label className="block text-sm font-medium text-grey-700 mb-2">Email Address</label>
+          <label className="block text-sm font-medium text-grey-700 mb-2">Email Address *</label>
           <input
             type="email"
             value={data.email}
             onChange={(e) => updateData('email', e.target.value)}
             className="w-full px-3 py-2 border border-grey-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             placeholder="your.email@example.com"
+            required
           />
+          <p className="text-xs text-grey-500 mt-1">You'll use this to create your account at the end</p>
         </div>
       </div>
 
@@ -474,49 +671,27 @@ function SkillsStep({ data, updateData }: { data: CandidateData; updateData: Fun
   );
 }
 
-function VideoStep({ data, updateData, planType, questions, profileId }: { 
+function VideoStep({ 
+  data, 
+  updateData, 
+  planType, 
+  questions, 
+  profileId,
+  onVideoUpload 
+}: { 
   data: CandidateData; 
   updateData: Function; 
   planType: keyof typeof PLAN_LIMITS;
   questions: string[];
   profileId: number | null;
+  onVideoUpload: (questionIndex: number, videoBlob: Blob, duration: number) => void;
 }) {
   const reRecordsLeft = PLAN_LIMITS[planType].reRecords === -1 ? 999 : PLAN_LIMITS[planType].reRecords;
   const currentQuestionIndex = data.videoAnswers.length;
 
   const handleRecordingComplete = async (recording: { duration: number; status: string; videoBlob?: Blob }) => {
-    const newAnswers = [...data.videoAnswers];
-    newAnswers[currentQuestionIndex] = {
-      question: questions[currentQuestionIndex],
-      duration: recording.duration,
-      status: recording.status
-    };
-    updateData('videoAnswers', newAnswers);
-
-    // Upload video to server if blob is available
-    if (recording.videoBlob && profileId) {
-      try {
-        // Convert blob to base64 for API
-        const reader = new FileReader();
-        reader.onloadend = async () => {
-          const base64 = reader.result as string;
-          
-          await fetch('/api/videos/upload', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              candidateProfileId: profileId,
-              questionText: questions[currentQuestionIndex],
-              videoBlob: base64.split(',')[1], // Remove data:video/webm;base64, prefix
-              durationSeconds: recording.duration,
-              responseOrder: currentQuestionIndex + 1
-            })
-          });
-        };
-        reader.readAsDataURL(recording.videoBlob);
-      } catch (error) {
-        console.error('Error uploading video:', error);
-      }
+    if (recording.videoBlob) {
+      await onVideoUpload(currentQuestionIndex, recording.videoBlob, recording.duration);
     }
   };
 
@@ -565,15 +740,16 @@ function VideoStep({ data, updateData, planType, questions, profileId }: {
   );
 }
 
-function ReviewStep({ data, updateData }: { data: CandidateData; updateData: Function }) {
+function CompleteStep({ data, updateData }: { data: CandidateData; updateData: Function }) {
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-semibold text-grey-900">Review & Consent</h2>
+      <h2 className="text-xl font-semibold text-grey-900">Complete & Register</h2>
       
       <div className="bg-grey-50 rounded-lg p-6">
         <h3 className="font-medium text-grey-900 mb-4">Profile Summary</h3>
         <div className="space-y-2 text-sm">
           <p><span className="font-medium">Name:</span> {data.name}</p>
+          <p><span className="font-medium">Email:</span> {data.email}</p>
           <p><span className="font-medium">Location:</span> {data.location}</p>
           <p><span className="font-medium">Experience:</span> {data.yearsExperience} years</p>
           <p><span className="font-medium">Target Roles:</span> {data.targetJobTitles.join(', ')}</p>
@@ -583,6 +759,41 @@ function ReviewStep({ data, updateData }: { data: CandidateData; updateData: Fun
         </div>
       </div>
 
+      {/* Account Creation Section */}
+      <div className="bg-blue-50 rounded-lg p-6">
+        <h3 className="font-medium text-grey-900 mb-4">Create Your Account</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-grey-700 mb-2">Password *</label>
+            <input
+              type="password"
+              value={data.password}
+              onChange={(e) => updateData('password', e.target.value)}
+              className="w-full px-3 py-2 border border-grey-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              placeholder="Create a secure password"
+              required
+            />
+            <p className="text-xs text-grey-500 mt-1">Must be at least 8 characters with uppercase, lowercase, number, and special character</p>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-grey-700 mb-2">Confirm Password *</label>
+            <input
+              type="password"
+              value={data.confirmPassword}
+              onChange={(e) => updateData('confirmPassword', e.target.value)}
+              className="w-full px-3 py-2 border border-grey-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+              placeholder="Confirm your password"
+              required
+            />
+            {data.password && data.confirmPassword && data.password !== data.confirmPassword && (
+              <p className="text-xs text-red-500 mt-1">Passwords do not match</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Consent Section */}
       <div className="space-y-4">
         <div className="border border-grey-200 rounded-lg p-4">
           <label className="flex items-start gap-3">
@@ -593,17 +804,26 @@ function ReviewStep({ data, updateData }: { data: CandidateData; updateData: Fun
               className="mt-1 rounded text-primary-500 focus:ring-primary-500"
             />
             <div className="text-sm text-grey-700">
-              <p className="font-medium mb-1">AI Analysis Consent</p>
+              <p className="font-medium mb-1">AI Analysis Consent & Terms</p>
               <p>I consent to Jobzworld using AI to analyse my profile information and video responses to match me with relevant job opportunities. I understand that:</p>
               <ul className="list-disc list-inside mt-2 space-y-1 text-grey-600">
                 <li>My profile will only be shared with employers who express interest</li>
                 <li>I can update or delete my information at any time</li>
                 <li>AI scoring is assistive and based on skills, experience, and communication style</li>
                 <li>All data processing complies with applicable privacy regulations</li>
+                <li>I agree to the Terms of Service and Privacy Policy</li>
               </ul>
             </div>
           </label>
         </div>
+      </div>
+
+      {/* Completion Status */}
+      <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+        <h4 className="font-medium text-green-800 mb-2">Ready to Complete!</h4>
+        <p className="text-green-700 text-sm">
+          Once you click "Create Account & Complete", we'll create your JobzWorld account and you'll be able to start receiving job matches immediately.
+        </p>
       </div>
     </div>
   );
