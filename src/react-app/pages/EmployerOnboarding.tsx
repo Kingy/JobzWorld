@@ -27,14 +27,25 @@ interface CompanyData {
   workCulture: string;
   videoIntroComplete: boolean;
   
-  // Step 4 - Review
+  // Step 4 - Review & Registration
   agreedToTerms: boolean;
+  email: string;
+  password: string;
+  confirmPassword: string;
+  fullName: string;
 }
 
-const STEPS = ['Company Info', 'Job Details', 'Company Culture', 'Review & Publish'];
+const STEPS = ['Company Info', 'Job Details', 'Company Culture', 'Complete & Register'];
+
+// API Configuration
+const API_BASE_URL = 'http://localhost:3001/api/v1';
 
 export default function EmployerOnboarding() {
   const [currentStep, setCurrentStep] = useState(1);
+  const [companyId, setCompanyId] = useState<number | null>(null);
+  const [jobId, setJobId] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [companyData, setCompanyData] = useState<CompanyData>({
     companyName: '',
     industry: '',
@@ -54,12 +65,139 @@ export default function EmployerOnboarding() {
     companyValues: [],
     workCulture: '',
     videoIntroComplete: false,
-    agreedToTerms: false
+    agreedToTerms: false,
+    email: '',
+    password: '',
+    confirmPassword: '',
+    fullName: ''
   });
 
-  const handleNext = () => {
-    if (currentStep < STEPS.length) {
-      setCurrentStep(currentStep + 1);
+  // API helper function (no authentication needed for onboarding)
+  const apiCall = async (endpoint: string, options: RequestInit = {}) => {
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ message: 'An error occurred' }));
+      throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+    }
+
+    return response.json();
+  };
+
+  const handleNext = async () => {
+    setError(null);
+    setLoading(true);
+
+    try {
+      if (currentStep === 1) {
+        // Create initial company profile after step 1
+        await createInitialCompany();
+      } else if (currentStep === 2) {
+        // Create job posting after step 2
+        await createJobPosting();
+      } else if (currentStep === 3) {
+        // Update company culture after step 3
+        await updateCompanyCulture();
+      }
+      
+      if (currentStep < STEPS.length) {
+        setCurrentStep(currentStep + 1);
+      }
+    } catch (err) {
+      console.error('Error in handleNext:', err);
+      setError(err instanceof Error ? err.message : 'An error occurred');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createInitialCompany = async () => {
+    try {
+      const companyProfileData = {
+        company_name: companyData.companyName,
+        industry: companyData.industry,
+        company_size: companyData.companySize,
+        location: companyData.location,
+        website: companyData.website,
+        description: companyData.description,
+      };
+
+      const response = await apiCall('/employers/profile', {
+        method: 'POST',
+        body: JSON.stringify(companyProfileData),
+      });
+
+      if (response.success) {
+        setCompanyId(response.data.id);
+        console.log('Company created with ID:', response.data.id);
+      }
+    } catch (error) {
+      console.error('Error creating company:', error);
+      throw error;
+    }
+  };
+
+  const createJobPosting = async () => {
+    if (!companyId) {
+      throw new Error('Company ID not found');
+    }
+
+    try {
+      const jobData = {
+        job_title: companyData.jobTitle,
+        department: companyData.department,
+        employment_type: companyData.employmentType,
+        working_model: companyData.workingModel,
+        location: companyData.location,
+        salary_min: companyData.salaryRange.min,
+        salary_max: companyData.salaryRange.max,
+        salary_currency: companyData.salaryRange.currency,
+        experience_level: companyData.experience,
+        requirements: companyData.requirements,
+        responsibilities: companyData.responsibilities,
+        benefits: companyData.benefits,
+      };
+
+      const response = await apiCall(`/employers/profile/${companyId}/job`, {
+        method: 'POST',
+        body: JSON.stringify(jobData),
+      });
+
+      if (response.success) {
+        setJobId(response.data.id);
+        console.log('Job created with ID:', response.data.id);
+      }
+    } catch (error) {
+      console.error('Error creating job:', error);
+      throw error;
+    }
+  };
+
+  const updateCompanyCulture = async () => {
+    if (!companyId) {
+      throw new Error('Company ID not found');
+    }
+
+    try {
+      const cultureData = {
+        company_values: companyData.companyValues,
+        work_culture: companyData.workCulture,
+        has_video_intro: companyData.videoIntroComplete,
+      };
+
+      await apiCall(`/employers/profile/${companyId}`, {
+        method: 'PUT',
+        body: JSON.stringify(cultureData),
+      });
+    } catch (error) {
+      console.error('Error updating company culture:', error);
+      throw error;
     }
   };
 
@@ -69,8 +207,92 @@ export default function EmployerOnboarding() {
     }
   };
 
-  const updateData = (field: keyof CompanyData, value: any) => {
+  const updateData = async (field: keyof CompanyData, value: any) => {
     setCompanyData(prev => ({ ...prev, [field]: value }));
+    
+    // Auto-save company updates if company exists and we're past step 1
+    if (companyId && currentStep > 1 && !['password', 'confirmPassword', 'email', 'fullName'].includes(field)) {
+      try {
+        await updateCompanyProfile({ [field]: value });
+      } catch (error) {
+        console.error('Error auto-saving company:', error);
+        // Don't throw error for auto-save, just log it
+      }
+    }
+  };
+
+  const updateCompanyProfile = async (updates: any) => {
+    if (!companyId) return;
+
+    // Transform frontend field names to backend field names
+    const backendUpdates: any = {};
+    
+    if (updates.companyName) backendUpdates.company_name = updates.companyName;
+    if (updates.industry) backendUpdates.industry = updates.industry;
+    if (updates.companySize) backendUpdates.company_size = updates.companySize;
+    if (updates.location) backendUpdates.location = updates.location;
+    if (updates.website) backendUpdates.website = updates.website;
+    if (updates.description) backendUpdates.description = updates.description;
+    if (updates.companyValues) backendUpdates.company_values = updates.companyValues;
+    if (updates.workCulture) backendUpdates.work_culture = updates.workCulture;
+    if (updates.videoIntroComplete !== undefined) backendUpdates.has_video_intro = updates.videoIntroComplete;
+
+    await apiCall(`/employers/profile/${companyId}`, {
+      method: 'PUT',
+      body: JSON.stringify(backendUpdates),
+    });
+  };
+
+  const handleCompleteOnboarding = async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      if (!companyId) {
+        throw new Error('Company ID not found. Please try again.');
+      }
+
+      // Validate passwords match
+      if (companyData.password !== companyData.confirmPassword) {
+        throw new Error('Passwords do not match');
+      }
+
+      if (companyData.password.length < 8) {
+        throw new Error('Password must be at least 8 characters long');
+      }
+
+      // Publish company and activate job postings
+      await apiCall(`/employers/profile/${companyId}/publish`, {
+        method: 'PUT'
+      });
+
+      // Claim the company profile and create user account
+      const claimResponse = await apiCall(`/employers/profile/${companyId}/claim`, {
+        method: 'POST',
+        body: JSON.stringify({
+          email: companyData.email,
+          password: companyData.password,
+          full_name: companyData.fullName
+        })
+      });
+
+      if (claimResponse.success) {
+        // Store auth tokens
+        localStorage.setItem('authToken', claimResponse.data.tokens.accessToken);
+        localStorage.setItem('refreshToken', claimResponse.data.tokens.refreshToken);
+        
+        alert('Company profile created successfully! Your job posting is now live and will start receiving candidate matches.');
+        
+        // Redirect to employer dashboard
+        window.location.href = '/employer/dashboard';
+      }
+      
+    } catch (error) {
+      console.error('Error completing onboarding:', error);
+      setError(error instanceof Error ? error.message : 'There was an error completing your company profile. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const renderStepContent = () => {
@@ -82,7 +304,7 @@ export default function EmployerOnboarding() {
       case 3:
         return <CompanyCultureStep data={companyData} updateData={updateData} />;
       case 4:
-        return <ReviewStep data={companyData} updateData={updateData} />;
+        return <CompleteStep data={companyData} updateData={updateData} />;
       default:
         return null;
     }
@@ -100,6 +322,12 @@ export default function EmployerOnboarding() {
           </div>
 
           <Stepper steps={STEPS} currentStep={currentStep} />
+
+          {error && (
+            <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-red-700 text-sm">{error}</p>
+            </div>
+          )}
 
           <div className="mt-8">
             {renderStepContent()}
@@ -120,15 +348,19 @@ export default function EmployerOnboarding() {
             </button>
 
             <button
-              onClick={handleNext}
-              disabled={currentStep === STEPS.length}
+              onClick={currentStep === STEPS.length ? handleCompleteOnboarding : handleNext}
+              disabled={loading || (currentStep === STEPS.length && (!companyData.agreedToTerms || !companyData.email || !companyData.password))}
               className={`flex items-center gap-2 px-6 py-2 rounded-lg text-sm font-medium ${
-                currentStep === STEPS.length
-                  ? 'bg-green-500 hover:bg-green-600 text-white'
+                loading 
+                  ? 'bg-grey-300 text-grey-500 cursor-not-allowed'
+                  : currentStep === STEPS.length
+                  ? (companyData.agreedToTerms && companyData.email && companyData.password)
+                    ? 'bg-green-500 hover:bg-green-600 text-white'
+                    : 'bg-grey-300 text-grey-500 cursor-not-allowed'
                   : 'bg-secondary-500 hover:bg-secondary-600 text-white'
               }`}
             >
-              {currentStep === STEPS.length ? 'Publish Job' : 'Next'}
+              {loading ? 'Loading...' : currentStep === STEPS.length ? 'Create Account & Publish Job' : 'Next'}
               <ArrowRight className="w-4 h-4" />
             </button>
           </div>
@@ -155,13 +387,14 @@ function CompanyInfoStep({ data, updateData }: { data: CompanyData; updateData: 
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
-          <label className="block text-sm font-medium text-grey-700 mb-2">Company Name</label>
+          <label className="block text-sm font-medium text-grey-700 mb-2">Company Name *</label>
           <input
             type="text"
             value={data.companyName}
             onChange={(e) => updateData('companyName', e.target.value)}
             className="w-full px-3 py-2 border border-grey-300 rounded-lg focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500"
             placeholder="Your company name"
+            required
           />
         </div>
         
@@ -274,13 +507,14 @@ function JobDetailsStep({ data, updateData }: { data: CompanyData; updateData: F
       
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
-          <label className="block text-sm font-medium text-grey-700 mb-2">Job Title</label>
+          <label className="block text-sm font-medium text-grey-700 mb-2">Job Title *</label>
           <input
             type="text"
             value={data.jobTitle}
             onChange={(e) => updateData('jobTitle', e.target.value)}
             className="w-full px-3 py-2 border border-grey-300 rounded-lg focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500"
             placeholder="e.g. Customer Success Manager"
+            required
           />
         </div>
         
@@ -493,7 +727,7 @@ function CompanyCultureStep({ data, updateData }: { data: CompanyData; updateDat
       </div>
 
       <div className="bg-grey-50 rounded-lg p-6">
-        <h3 className="text-lg font-semibold text-grey-900 mb-4">Company Introduction Video</h3>
+        <h3 className="text-lg font-semibold text-grey-900 mb-4">Company Introduction Video (Optional)</h3>
         <p className="text-grey-600 mb-4">
           Record a 2-minute video introducing your company to potential candidates. Share your mission, culture, and what makes your team special.
         </p>
@@ -564,10 +798,10 @@ function CompanyCultureStep({ data, updateData }: { data: CompanyData; updateDat
   );
 }
 
-function ReviewStep({ data, updateData }: { data: CompanyData; updateData: Function }) {
+function CompleteStep({ data, updateData }: { data: CompanyData; updateData: Function }) {
   return (
     <div className="space-y-6">
-      <h2 className="text-xl font-semibold text-grey-900">Review & Publish</h2>
+      <h2 className="text-xl font-semibold text-grey-900">Complete & Register</h2>
       
       <div className="bg-grey-50 rounded-lg p-6">
         <h3 className="font-medium text-grey-900 mb-4">Company Profile Summary</h3>
@@ -585,6 +819,64 @@ function ReviewStep({ data, updateData }: { data: CompanyData; updateData: Funct
             <p><span className="font-medium">Type:</span> {data.employmentType}</p>
             <p><span className="font-medium">Working Model:</span> {data.workingModel}</p>
             <p><span className="font-medium">Salary:</span> ${data.salaryRange.min.toLocaleString()} - ${data.salaryRange.max.toLocaleString()}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Account Creation Section */}
+      <div className="bg-blue-50 rounded-lg p-6">
+        <h3 className="font-medium text-grey-900 mb-4">Create Your Account</h3>
+        <div className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-grey-700 mb-2">Full Name *</label>
+            <input
+              type="text"
+              value={data.fullName}
+              onChange={(e) => updateData('fullName', e.target.value)}
+              className="w-full px-3 py-2 border border-grey-300 rounded-lg focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500"
+              placeholder="Your full name"
+              required
+            />
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-grey-700 mb-2">Email Address *</label>
+            <input
+              type="email"
+              value={data.email}
+              onChange={(e) => updateData('email', e.target.value)}
+              className="w-full px-3 py-2 border border-grey-300 rounded-lg focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500"
+              placeholder="your.email@company.com"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-grey-700 mb-2">Password *</label>
+            <input
+              type="password"
+              value={data.password}
+              onChange={(e) => updateData('password', e.target.value)}
+              className="w-full px-3 py-2 border border-grey-300 rounded-lg focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500"
+              placeholder="Create a secure password"
+              required
+            />
+            <p className="text-xs text-grey-500 mt-1">Must be at least 8 characters with uppercase, lowercase, number, and special character</p>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-grey-700 mb-2">Confirm Password *</label>
+            <input
+              type="password"
+              value={data.confirmPassword}
+              onChange={(e) => updateData('confirmPassword', e.target.value)}
+              className="w-full px-3 py-2 border border-grey-300 rounded-lg focus:ring-2 focus:ring-secondary-500 focus:border-secondary-500"
+              placeholder="Confirm your password"
+              required
+            />
+            {data.password && data.confirmPassword && data.password !== data.confirmPassword && (
+              <p className="text-xs text-red-500 mt-1">Passwords do not match</p>
+            )}
           </div>
         </div>
       </div>
@@ -638,16 +930,18 @@ function ReviewStep({ data, updateData }: { data: CompanyData; updateData: Funct
                 <li>Candidate profiles are shared only after mutual interest</li>
                 <li>All communications are handled through the Jobzworld platform</li>
                 <li>Billing begins after the first successful hire</li>
+                <li>I agree to the Terms of Service and Privacy Policy</li>
               </ul>
             </div>
           </label>
         </div>
       </div>
 
-      {data.agreedToTerms && (
+      {data.agreedToTerms && data.email && data.password && (
         <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+          <h4 className="font-medium text-green-800 mb-2">Ready to Launch!</h4>
           <p className="text-green-700 text-sm">
-            Ready to publish! Your job posting will be live and start receiving AI-matched candidate profiles within 24 hours.
+            Your job posting will be live and start receiving AI-matched candidate profiles immediately after account creation.
           </p>
         </div>
       )}
