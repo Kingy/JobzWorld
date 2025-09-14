@@ -2,8 +2,7 @@
 
 // API Configuration - works for both Vite and Create React App
 const API_BASE_URL = 
-  import.meta.env?.VITE_API_BASE_URL ||           // Vite
-  process.env.REACT_APP_API_BASE_URL ||          // Create React App
+  import.meta.env?.VITE_API_BASE_URL ||           // Vite  
   'http://localhost:3001/api/v1';                // Local fallback
 
 // Helper function for API calls
