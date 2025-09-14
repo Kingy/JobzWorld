@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ArrowLeft, ArrowRight } from "lucide-react";
 import Stepper from "@/react-app/components/Stepper";
 import VideoRecorder from "@/react-app/components/VideoRecorder";
+import { apiCall } from '@/config/api';
 
 interface CandidateData {
   // Step 1 - Basics
@@ -46,9 +47,6 @@ const PLAN_LIMITS = {
   Pro: { reRecords: -1 }, // unlimited
 };
 
-// API Configuration
-const API_BASE_URL = "http://localhost:3001/api/v1";
-
 export default function CandidateOnboarding() {
   const [currentStep, setCurrentStep] = useState(1);
   const [planType] = useState<keyof typeof PLAN_LIMITS>("Basic");
@@ -75,28 +73,6 @@ export default function CandidateOnboarding() {
     password: "",
     confirmPassword: "",
   });
-
-  // API helper function (no authentication needed for onboarding)
-  const apiCall = async (endpoint: string, options: RequestInit = {}) => {
-    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-      ...options,
-      headers: {
-        "Content-Type": "application/json",
-        ...options.headers,
-      },
-    });
-
-    if (!response.ok) {
-      const errorData = await response
-        .json()
-        .catch(() => ({ message: "An error occurred" }));
-      throw new Error(
-        errorData.message || `HTTP error! status: ${response.status}`
-      );
-    }
-
-    return response.json();
-  };
 
   const handleNext = async () => {
     setError(null);
